@@ -27,7 +27,7 @@ class LayerEdgeConnection {
         return this.wallet;
     }
 
-    async makeRequest(method, url, config = {}, retries = 30) {
+    async makeRequest(method, url, config = {}, retries = 3) {
         for (let i = 0; i < retries; i++) {
             try {
                 const headers = { ...this.headers };
