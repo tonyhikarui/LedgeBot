@@ -1,12 +1,18 @@
-
 import { ethers } from 'ethers'
 import fs from 'fs/promises'
+import mysql from 'mysql2/promise'
 import readline from 'readline'
 import log from './utils/logger.js'
 import LayerEdge from './utils/socket.js';
 import { readFile } from './utils/helper.js';
 
-const WALLETS_PATH = 'walletsRef.json'
+const WALLETS_PATH = 'results/wallets_ref.json'
+const DB_CONFIG = {
+  host: 'localhost',
+  user: 'ledge',
+  password: 'hfLEsAtStG4LzETZ',
+  database: 'ledge'
+};
 
 function createNewWallet() {
     const wallet = ethers.Wallet.createRandom();
@@ -43,6 +49,31 @@ async function saveWalletToFile(walletDetails) {
     } catch (err) {
         log.error("Error writing to walletsRef.json:", err);
     }
+}
+
+async function saveWalletToDatabase(walletDetails) {
+  const connection = await mysql.createConnection(DB_CONFIG);
+  try {
+    // Check if wallet already exists
+    const [existing] = await connection.execute(
+      'SELECT COUNT(*) as count FROM wallets WHERE address = ?',
+      [walletDetails.address]
+    );
+
+    if (existing[0].count === 0) {
+      await connection.execute(
+        'INSERT INTO wallets (address, privateKey, mnemonic) VALUES (?, ?, ?)',
+        [walletDetails.address, walletDetails.privateKey, walletDetails.mnemonic]
+      );
+      log.info(`Wallet saved to database: ${walletDetails.address}`);
+    } else {
+      log.warn(`Wallet already exists in database: ${walletDetails.address}`);
+    }
+  } catch (err) {
+    log.error('Error saving to database:', err);
+  } finally {
+    await connection.end();
+  }
 }
 
 // Function to ask a question 
@@ -104,7 +135,10 @@ async function autoRegister() {
 
                     const isRegistered = await refSocket.registerWallet(refCode);
                     if (isRegistered) {
-                        saveWalletToFile(walletDetails);
+                        await Promise.all([
+                            //saveWalletToFile(walletDetails),
+                            saveWalletToDatabase(walletDetails)
+                        ]);
                     }
 
                     await new Promise(resolve => setTimeout(resolve, 1000));

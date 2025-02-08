@@ -1,0 +1,7 @@
+
+CREATE TABLE wallets (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  address VARCHAR(42) NOT NULL UNIQUE,
+  privateKey VARCHAR(66) NOT NULL,
+  mnemonic TEXT NOT NULL
+);
