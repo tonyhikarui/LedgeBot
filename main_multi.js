@@ -9,6 +9,19 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+/*
+Here's a summary of the key modifications made to implement parallel processing with multiple workers:
+
+Key Features:
+- Each worker processes wallets independently
+- Tasks are distributed evenly across workers
+- Workers run in parallel using Promise.all
+- Proper cleanup and error handling for workers
+- Progress tracking per worker
+- Resource management with delays between operations
+
+This implementation allows for true parallel processing while maintaining stable operation and proper resource management.
+*/
 
 const DB_CONFIG = {
   host: 'localhost',
