@@ -1,11 +1,10 @@
 import fs from 'fs/promises'
-import { Worker } from 'worker_threads';
 import log from './utils/logger.js'
 import { readFile, delay } from './utils/helper.js'
 import banner from './utils/banner.js';
+import LayerEdge from './utils/socket.js';
 
 const WALLETS_PATH = 'wallets.json'
-const MAX_CONCURRENT_WORKERS = 5; // Adjust based on your needs
 
 // Function to read wallets 
 async function readWallets() {
@@ -23,36 +22,28 @@ async function readWallets() {
     }
 }
 
-async function processWalletBatch(wallets, proxies) {
-    const activeWorkers = new Set();
-    const walletQueue = [...wallets];
+async function processWallet(wallet, proxy, index, total) {
+    try {
+        const { address, privateKey } = wallet;
+        const socket = new LayerEdge(proxy, privateKey);
+        
+        log.info(`[${index}/${total}] Processing Wallet Address: ${address} with proxy:`, proxy);
+        log.info(`[${index}/${total}] Checking Node Status for: ${address}`);
+        await socket.checkIN();
+        const isRunning = await socket.checkNodeStatus();
 
-    while (walletQueue.length > 0 || activeWorkers.size > 0) {
-        while (activeWorkers.size < MAX_CONCURRENT_WORKERS && walletQueue.length > 0) {
-            const wallet = walletQueue.shift();
-            const proxy = proxies[wallets.indexOf(wallet) % proxies.length] || null;
-            
-            const worker = new Worker('./workers/walletWorker.js', { type: 'module' });
-            activeWorkers.add(worker);
-
-            worker.on('message', (result) => {
-                if (!result.success) {
-                    log.error(`Error Processing wallet ${result.address}:`, result.error);
-                }
-            });
-
-            worker.on('error', (error) => {
-                log.error('Worker error:', error);
-            });
-
-            worker.on('exit', () => {
-                activeWorkers.delete(worker);
-            });
-
-            worker.postMessage({ wallet, proxy });
+        if (isRunning) {
+            log.info(`[${index}/${total}] Wallet ${address} is running - trying to claim node points...`);
+            await socket.stopNode();
         }
+        
+        log.info(`[${index}/${total}] Trying to reconnect node for Wallet: ${address}`);
+        await socket.connectNode();
 
-        await delay(1); // Small delay to prevent CPU overload
+        log.info(`[${index}/${total}] Checking Node Points for Wallet: ${address}`);
+        await socket.checkNodePoints();
+    } catch (error) {
+        log.error(`[${index}/${total}] Error Processing wallet:`, error.message);
     }
 }
 
@@ -69,11 +60,18 @@ async function run() {
     }
 
     log.info('Starting run Program with all Wallets:', wallets.length);
+    let runCount = 1;
 
     while (true) {
-        await processWalletBatch(wallets, proxies);
-        log.warn(`All Wallets have been processed, waiting 1 hour before next run...`);
-        await delay(60 * 60);
+        log.info(`Starting Run #${runCount}`);
+        for (let i = 0; i < wallets.length; i++) {
+            const wallet = wallets[i];
+            const proxy = proxies[i % proxies.length] || null;
+            await processWallet(wallet, proxy, i + 1, wallets.length);
+        }
+        log.warn(`Run #${runCount} completed. All Wallets have been processed, waiting 1 hour before next run...`);
+        runCount++;
+        await delay(60);
     }
 }
 
