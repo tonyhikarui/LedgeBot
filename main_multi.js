@@ -30,11 +30,25 @@ const DB_CONFIG = {
   database: 'ledge'
 };
 
+// Add function to get total wallet count
+async function getTotalWallets() {
+  const connection = await mysql.createConnection(DB_CONFIG);
+  try {
+    const [rows] = await connection.execute('SELECT COUNT(*) as total FROM wallets');
+    return rows[0].total;
+  } catch (err) {
+    log.error('Error getting total wallet count:', err);
+    return 0;
+  } finally {
+    await connection.end();
+  }
+}
+
 const CONFIG = {
-  BATCH_SIZE: 4,          // Process multiple wallets in a batch
-  NUM_WORKERS: 4,         // Use multiple workers
+  BATCH_SIZE: 30,          // Process multiple wallets in a batch
+  NUM_WORKERS: 30,         // Use multiple workers
   START_OFFSET: 0,
-  PROCESS_AMOUNT: 1000,
+  PROCESS_AMOUNT: 0,       // Will be set dynamically
   WORKER_DELAY: 1,
   WALLET_DELAY: 2,
   WORKER_TIMEOUT: 120000  // Increased timeout to 120 seconds
@@ -180,9 +194,18 @@ async function run() {
     let totalProcessed = 0;
     let errorCount = { value: 0 };
 
-    log.info(`Starting Run #${runCount}`);
+    // Update total wallet count at the start of each run
+    CONFIG.PROCESS_AMOUNT = await getTotalWallets();
+    log.info(`Starting Run #${runCount} - Total wallets: ${CONFIG.PROCESS_AMOUNT}`);
 
     while (offset < CONFIG.PROCESS_AMOUNT) {
+      // Update total wallet count before each batch
+      const currentTotal = await getTotalWallets();
+      if (currentTotal !== CONFIG.PROCESS_AMOUNT) {
+        log.info(`Total wallets changed from ${CONFIG.PROCESS_AMOUNT} to ${currentTotal}`);
+        CONFIG.PROCESS_AMOUNT = currentTotal;
+      }
+
       const remainingWallets = CONFIG.PROCESS_AMOUNT - offset;
       const currentBatchSize = Math.min(CONFIG.BATCH_SIZE, remainingWallets);
       
