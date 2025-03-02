@@ -2,7 +2,9 @@ import { parentPort, workerData } from 'worker_threads';
 import log from './utils/logger.js';
 import LayerEdge from './utils/socket.js';
 import { delay } from './utils/helper.js';
-
+import { updateWalletProof } from './utils/database.js';  // Remove checkWalletProof
+const DO_PROOF = false;
+const DO_CHECKIN = true;
 parentPort.on('message', async (data) => {
   let socket;
   try {
@@ -10,67 +12,87 @@ parentPort.on('message', async (data) => {
     const startTime = Date.now();
     log.info(`Worker received new wallet task: ${wallet.address} (${currentCount}/${total})`);
     log.info(`[${currentCount}/${total}] Worker ${workerData.workerIndex}: Starting processing`);
-    
+
     if (!wallet) {
       throw new Error('Wallet data is missing in worker data');
     }
 
-    const { address, privateKey } = wallet;
-    
+    const { address, privateKey, proof } = wallet;
+
     // Detailed connection logging
     //log.debug(`[${currentCount}/${total}] Creating LayerEdge instance for ${address}`);
     //log.debug(`[${currentCount}/${total}] Using proxy: ${proxy || 'none'}`);
     socket = new LayerEdge(proxy, privateKey);
     //log.debug(`[${currentCount}/${total}] LayerEdge instance created successfully`);
-    
+
     log.info(`[${currentCount}/${total}] Processing Wallet Address: ${address} with proxy:`, proxy);
     await delay(1);
-    
+
     // Check-in logging
     //log.debug(`[${currentCount}/${total}] Starting checkIN for ${address}`);
     //const checkInStart = Date.now();
+    if (DO_CHECKIN) {
     await socket.checkIN();
+    }
     //log.debug(`[${currentCount}/${total}] CheckIN completed for ${address} in ${Date.now() - checkInStart}ms`);
     //await delay(1);
-    
+
     // Node status check with detailed logging
     //log.debug(`[${currentCount}/${total}] Starting node status check for ${address}`);
     const statusStart = Date.now();
     try {
-      const isRunning = await socket.checkNodeStatus();
-      //log.debug(`[${currentCount}/${total}] Node status check completed in ${Date.now() - statusStart}ms`);
-      log.debug(`[${currentCount}/${total}] Node status: ${isRunning ? 'running' : 'not running'}`);
+      if (DO_CHECKIN) {
+        const isRunning = await socket.checkNodeStatus();
+        //log.debug(`[${currentCount}/${total}] Node status check completed in ${Date.now() - statusStart}ms`);
+        log.debug(`[${currentCount}/${total}] Node status: ${isRunning ? 'running' : 'not running'}`);
 
-      //await delay(1);
+        //await delay(1);
 
-      if (isRunning) {
-        // Stop node process
-        //log.info(`[${currentCount}/${total}] Wallet ${address} is running - trying to claim node points...`);
-        const stopStart = Date.now();
-        await socket.stopNode();
-        log.debug(`[${currentCount}/${total}] Stop node completed in ${Date.now() - stopStart}ms`);
+        if (isRunning) {
+          // Stop node process
+          //log.info(`[${currentCount}/${total}] Wallet ${address} is running - trying to claim node points...`);
+          const stopStart = Date.now();
+          await socket.stopNode();
+          log.debug(`[${currentCount}/${total}] Stop node completed in ${Date.now() - stopStart}ms`);
+          await delay(1);
+        }
+
+        // Connect node process
+        //log.info(`[${currentCount}/${total}] Trying to connect node for Wallet: ${address}`);
+        const connectStart = Date.now();
+        await socket.connectNode();
+        log.debug(`[${currentCount}/${total}] Connect node completed in ${Date.now() - connectStart}ms`);
+        //await delay(1);
+
+        const points = await socket.checkNodePoints();
+        //log.debug(`[${currentCount}/${total}] Check points completed in ${Date.now() - pointsStart}ms`);
+        log.debug(`[${currentCount}/${total}] Current points: ${points?.nodePoints || 'unknown'}`);
+
+        const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+        log.debug(`[${currentCount}/${total}] Total processing time: ${totalTime}s`);
+
+        // Add small delay before sending success message
         await delay(1);
       }
 
-      // Connect node process
-      //log.info(`[${currentCount}/${total}] Trying to connect node for Wallet: ${address}`);
-      const connectStart = Date.now();
-      await socket.connectNode();
-      log.debug(`[${currentCount}/${total}] Connect node completed in ${Date.now() - connectStart}ms`);
-      //await delay(1);
+      if (DO_PROOF) {
+        //logger.progress(address, 'Submitting Proof', 'processing');
+        if (wallet.proof === null) {
+          log.debug(`[${currentCount}/${total}] Submitting Proof ${address}`);
+          const proofResult = await socket.submitProof();
+          if (proofResult === true) {
+            await updateWalletProof(address, 1);
+            await delay(1);
+            log.info(`[${currentCount}/${total}] Proof submitted successfully for ${address}, database updated`);
+          }
+        } else {
+          log.info(`[${currentCount}/${total}] Proof already submitted for ${address}, skipping`);
+        }
 
-      // Check points process
-      //log.info(`[${currentCount}/${total}] Checking Node Points for Wallet: ${address}`);
-      //const pointsStart = Date.now();
-      const points = await socket.checkNodePoints();
-      //log.debug(`[${currentCount}/${total}] Check points completed in ${Date.now() - pointsStart}ms`);
-      log.debug(`[${currentCount}/${total}] Current points: ${points?.nodePoints || 'unknown'}`);
-      
-      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-      log.debug(`[${currentCount}/${total}] Total processing time: ${totalTime}s`);
-      
-      // Add small delay before sending success message
-      await delay(1);
+        if (wallet.proof === 1) {
+        //  await socket.claimProofSubmissionPoints();
+        }
+      }
       parentPort.postMessage({ success: true });
     } catch (error) {
       const errorTime = Date.now() - startTime;
@@ -85,9 +107,9 @@ parentPort.on('message', async (data) => {
     log.error(`Worker error processing wallet:`);
     log.error(`- Message: ${errorMessage}`);
     log.error(`- Stack: ${errorStack}`);
-    
-    parentPort.postMessage({ 
-      success: false, 
+
+    parentPort.postMessage({
+      success: false,
       error: errorMessage,
       type: errorMessage.includes('timed out') ? 'timeout' : 'error'
     });

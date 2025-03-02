@@ -6,6 +6,7 @@ import { readFile, delay } from './utils/helper.js';
 import banner from './utils/banner.js';
 import path, { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import pool from './utils/database.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,24 +24,16 @@ Key Features:
 This implementation allows for true parallel processing while maintaining stable operation and proper resource management.
 */
 
-const DB_CONFIG = {
-  host: 'localhost',
-  user: 'ledge',
-  password: 'hfLEsAtStG4LzETZ',
-  database: 'ledge'
-};
+// Remove duplicate DB_CONFIG since it's now in database.js
 
-// Add function to get total wallet count
+// Update function to use pool
 async function getTotalWallets() {
-  const connection = await mysql.createConnection(DB_CONFIG);
   try {
-    const [rows] = await connection.execute('SELECT COUNT(*) as total FROM wallets');
+    const [rows] = await pool.execute('SELECT COUNT(*) as total FROM wallets');
     return rows[0].total;
   } catch (err) {
     log.error('Error getting total wallet count:', err);
     return 0;
-  } finally {
-    await connection.end();
   }
 }
 
@@ -59,15 +52,15 @@ const workers = new Map();
 const taskQueue = [];
 
 async function readWalletsFromDB(offset = 0, limit = 100) {
-  const connection = await mysql.createConnection(DB_CONFIG);
   try {
-    const [rows] = await connection.execute(
-      'SELECT address, privateKey FROM wallets LIMIT ? OFFSET ?',
+    const [rows] = await pool.execute(
+      'SELECT address, privateKey, proof FROM wallets LIMIT ? OFFSET ?',
       [limit, offset]
     );
     return rows;
-  } finally {
-    await connection.end();
+  } catch (error) {
+    log.error('Error reading wallets from database:', error);
+    return [];
   }
 }
 
@@ -254,10 +247,12 @@ process.on('SIGINT', async () => {
   for (const worker of workers.values()) {
     worker.terminate();
   }
+  await pool.end();
   process.exit(0);
 });
 
 run().catch(async err => {
   log.error(`Fatal error: ${err.message}`);
+  await pool.end();
   process.exit(1);
 });

@@ -44,6 +44,10 @@ class LayerEdgeConnection {
                 });
                 return response;
             } catch (error) {
+                if (error?.response?.status === 429) {
+                    // Return error response for 429 instead of retrying
+                    return error.response;
+                }
                 if (error?.response?.status === 404 || error?.status === 404) {
                     log.error(chalk.red(`Layer Edge connection failed wallet not registered yet...`));
                     return 404;
@@ -54,7 +58,8 @@ class LayerEdgeConnection {
                     if (this.proxy) {
                         log.error(`Failed proxy: ${this.proxy}`, error.message);
                     }
-                    return null;
+                    // Return the error response on last retry
+                    return error.response || null;
                 }
 
                 process.stdout.write(chalk.yellow(`request failed: ${error.message} => Retrying... (${i + 1}/${retries})\r`));
@@ -216,6 +221,90 @@ class LayerEdgeConnection {
         } else {
             log.error("Failed to check Total Points..");
             return { refCode: null, nodePoints: 0, referralCount: 0 };
+        }
+    }
+    async submitProof() {
+        try {
+            const timestamp = new Date().toISOString();
+            const message = `I am submitting a proof for LayerEdge at ${timestamp}`;
+            const signature = await this.wallet.signMessage(message);
+            
+            const proofData = {
+                proof: "GmEdgesss",
+                signature: signature,
+                message: message,
+                address: this.wallet.address
+            };
+
+            const config = {
+                data: proofData,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*'
+                }
+            };
+
+            const response = await this.makeRequest(
+                "post",
+                "https://dashboard.layeredge.io/api/send-proof",
+                config
+            );
+
+            // Handle 429 status code
+            if (response?.status === 429) {
+                log.info(`Proof rate limited for ${this.wallet.address} - counting as success`);
+                return true;
+            }
+
+            if (response?.data?.success) {
+                log.info("Proof submitted successfully", response.data.message);
+                return true;
+            }
+
+            log.info("Failed to submit proof", response?.data);
+            return false;
+        } catch (error) {
+            log.info("Error submitting proof:", error.message);
+            return false;
+        }
+    }
+
+    async claimProofSubmissionPoints() {
+        try {
+            const timestamp = Date.now();
+            const message = `I am claiming my proof submission node points for ${this.wallet.address} at ${timestamp}`;
+            const sign = await this.wallet.signMessage(message);
+
+            const claimData = {
+                walletAddress: this.wallet.address,
+                timestamp: timestamp,
+                sign: sign
+            };
+
+            const config = {
+                data: claimData,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*'
+                }
+            };
+
+            const response = await this.makeRequest(
+                "post",
+                "https://referralapi.layeredge.io/api/task/proof-submission",
+                config
+            );
+
+            if (response && response.data && response.data.message === "proof submission task completed successfully") {
+                log.info("Proof submission points claimed successfully");
+                return true;
+            } else {
+                log.info("Failed to claim proof submission points", response?.data);
+                return false;
+            }
+        } catch (error) {
+            log.info("Error claiming proof submission points", "", error);
+            return false;
         }
     }
 }
