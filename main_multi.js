@@ -51,17 +51,23 @@ const CONFIG = {
 const workers = new Map();
 const taskQueue = [];
 
-async function readWalletsFromDB(offset = 0, limit = 100) {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT address, privateKey, proof FROM wallets LIMIT ? OFFSET ?',
-      [limit, offset]
-    );
-    return rows;
-  } catch (error) {
-    log.error('Error reading wallets from database:', error);
-    return [];
+async function readWalletsFromDB(offset = 0, limit = 100, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const [rows] = await pool.execute(
+        'SELECT address, privateKey, proof FROM wallets LIMIT ? OFFSET ?',
+        [limit, offset]
+      );
+      return rows;
+    } catch (error) {
+      log.error(`Error reading wallets from database (attempt ${i + 1}/${maxRetries}):`, error);
+      if (i === maxRetries - 1) {
+        throw error; // Throw on last retry
+      }
+      await delay(5); // Wait 5 seconds before retry
+    }
   }
+  return []; // Should never reach here due to throw above
 }
 
 // Add initializeWorkers function
@@ -192,45 +198,51 @@ async function run() {
     log.info(`Starting Run #${runCount} - Total wallets: ${CONFIG.PROCESS_AMOUNT}`);
 
     while (offset < CONFIG.PROCESS_AMOUNT) {
-      // Update total wallet count before each batch
-      const currentTotal = await getTotalWallets();
-      if (currentTotal !== CONFIG.PROCESS_AMOUNT) {
-        log.info(`Total wallets changed from ${CONFIG.PROCESS_AMOUNT} to ${currentTotal}`);
-        CONFIG.PROCESS_AMOUNT = currentTotal;
-      }
+      try {
+        const remainingWallets = CONFIG.PROCESS_AMOUNT - offset;
+        const currentBatchSize = Math.min(CONFIG.BATCH_SIZE, remainingWallets);
+        
+        let wallets = [];
+        try {
+          wallets = await readWalletsFromDB(offset, currentBatchSize);
+        } catch (error) {
+          log.error('Failed to read wallets, retrying in 10 seconds...');
+          await delay(10);
+          continue; // Skip this iteration and retry
+        }
+        
+        if (wallets.length === 0) {
+          log.warn(`No wallets found at offset ${offset}`);
+          break; // Skip this run if no wallets are found
+        }
 
-      const remainingWallets = CONFIG.PROCESS_AMOUNT - offset;
-      const currentBatchSize = Math.min(CONFIG.BATCH_SIZE, remainingWallets);
-      
-      const wallets = await readWalletsFromDB(offset, currentBatchSize);
-      
-      if (wallets.length === 0) {
-        log.warn(`No wallets found at offset ${offset}, ending run`);
-        break;
-      }
+        log.info(`Processing batch of ${wallets.length} wallets (offset: ${offset})...`);
 
-      log.info(`Processing batch of ${wallets.length} wallets (offset: ${offset})...`);
+        // Enqueue tasks for each wallet
+        for (let i = 0; i < wallets.length; i++) {
+          const wallet = wallets[i];
+          const workerIndex = i % CONFIG.NUM_WORKERS;
+          const currentCount = totalProcessed + i + 1;
+          enqueueTask({ wallet, workerIndex, offset, proxiesIndex: i, currentCount });
+        }
 
-      // Enqueue tasks for each wallet
-      for (let i = 0; i < wallets.length; i++) {
-        const wallet = wallets[i];
-        const workerIndex = i % CONFIG.NUM_WORKERS;
-        const currentCount = totalProcessed + i + 1;
-        enqueueTask({ wallet, workerIndex, offset, proxiesIndex: i, currentCount });
-      }
+        // Process the task queue
+        await processTaskQueue(proxies, errorCount, totalProcessed);
 
-      // Process the task queue
-      await processTaskQueue(proxies, errorCount, totalProcessed);
+        totalProcessed += wallets.length;
+        offset += wallets.length;
 
-      totalProcessed += wallets.length;
-      offset += wallets.length;
+        log.info(`Batch completed. Total processed: ${totalProcessed}`);
+        await delay(CONFIG.WORKER_DELAY);
 
-      log.info(`Batch completed. Total processed: ${totalProcessed}`);
-      await delay(CONFIG.WORKER_DELAY);
-
-      if (totalProcessed % 100 === 0) {
-        const progress = ((offset / CONFIG.PROCESS_AMOUNT) * 100).toFixed(1);
-        log.info(`Progress: ${progress}% (${offset}/${CONFIG.PROCESS_AMOUNT} wallets)`);
+        if (totalProcessed % 100 === 0) {
+          const progress = ((offset / CONFIG.PROCESS_AMOUNT) * 100).toFixed(1);
+          log.info(`Progress: ${progress}% (${offset}/${CONFIG.PROCESS_AMOUNT} wallets)`);
+        }
+      } catch (error) {
+        log.error('Error in main processing loop:', error);
+        await delay(10); // Wait before retrying
+        continue;
       }
     }
 
